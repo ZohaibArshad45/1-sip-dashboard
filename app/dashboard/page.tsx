@@ -17,7 +17,21 @@ import {
   CalendarDays,
   ChevronRight,
   LogOut,
+  CheckCircle2,
+  CircleAlert,
+  Clock3,
+  Banknote,
+  ReceiptText,
 } from "lucide-react";
+
+type Delivery = {
+  id: string;
+  client_id: string;
+  delivery_date: string;
+  bottles_delivered: number;
+  status: "pending" | "delivered" | "missed";
+  notes: string | null;
+};
 
 type Client = {
   id: string;
@@ -43,6 +57,20 @@ function formatCurrency(value: number) {
   return `Rs. ${value.toLocaleString("en-PK", {
     maximumFractionDigits: 2,
   })}`;
+}
+
+function getPakistanDate() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "Asia/Karachi",
+  }).formatToParts(new Date());
+
+  const year = parts.find((part) => part.type === "year")?.value ?? "";
+  const month = parts.find((part) => part.type === "month")?.value ?? "";
+  const day = parts.find((part) => part.type === "day")?.value ?? "";
+  return `${year}-${month}-${day}`;
 }
 
 async function logout() {
@@ -78,6 +106,75 @@ export default async function DashboardPage() {
     0
   );
 
+  const today = getPakistanDate();
+  const monthStart = `${today.slice(0, 7)}-01`;
+  const monthEnd = today;
+
+  const { data: paymentRows, error: paymentsError } = await supabase
+    .from("payments")
+    .select("id, client_id, amount, billing_month, payment_date, payment_method, notes")
+    .gte("payment_date", monthStart)
+    .lte("payment_date", monthEnd)
+    .order("payment_date", { ascending: false });
+
+  const monthlyPayments = paymentRows ?? [];
+  const paymentsReceived = monthlyPayments.reduce(
+    (total, payment) => total + Number(payment.amount || 0),
+    0
+  );
+
+  const { data: billedPaymentRows, error: billedPaymentsError } = await supabase
+    .from("payments")
+    .select("amount, client_id")
+    .eq("billing_month", monthStart);
+
+  const billedPayments = billedPaymentRows ?? [];
+  const billedPaymentsTotal = billedPayments.reduce(
+    (total, payment) => total + Number(payment.amount || 0),
+    0
+  );
+  const outstandingPayments = Math.max(0, monthlyRevenue - billedPaymentsTotal);
+
+  const { data: expenseRows, error: expensesError } = await supabase
+    .from("expenses")
+    .select("id, title, category, amount, expense_date, notes")
+    .gte("expense_date", monthStart)
+    .lte("expense_date", monthEnd)
+    .order("expense_date", { ascending: false });
+
+  const monthlyExpenses = (expenseRows ?? []).reduce(
+    (total, expense) => total + Number(expense.amount || 0),
+    0
+  );
+  const netProfit = paymentsReceived - monthlyExpenses;
+
+  const { data: deliveryRows, error: deliveriesError } = await supabase
+    .from("deliveries")
+    .select("id, client_id, delivery_date, bottles_delivered, status, notes")
+    .eq("delivery_date", today);
+
+  const todayDeliveries = (deliveryRows ?? []) as Delivery[];
+  const activeClientIds = new Set(activeClients.map((client) => client.id));
+  const activeTodayDeliveries = todayDeliveries.filter((delivery) =>
+    activeClientIds.has(delivery.client_id)
+  );
+  const deliveredCount = activeTodayDeliveries.filter(
+    (delivery) => delivery.status === "delivered"
+  ).length;
+  const missedCount = activeTodayDeliveries.filter(
+    (delivery) => delivery.status === "missed"
+  ).length;
+  const pendingCount = Math.max(
+    0,
+    activeClients.length - deliveredCount - missedCount
+  );
+  const deliveredBottles = activeTodayDeliveries
+    .filter((delivery) => delivery.status === "delivered")
+    .reduce(
+      (total, delivery) => total + Number(delivery.bottles_delivered || 0),
+      0
+    );
+
   const navigation = [
     { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard, active: true },
     { label: "Clients", href: "/clients", icon: Users, active: false },
@@ -96,25 +193,53 @@ export default async function DashboardPage() {
       color: "bg-blue-50 text-blue-600",
     },
     {
-      title: "Daily Bottles",
+      title: "Planned Daily Bottles",
       value: totalDailyBottles.toLocaleString("en-PK"),
-      description: "Planned from active clients",
+      description: "Expected from active clients",
       icon: Truck,
       color: "bg-emerald-50 text-emerald-600",
     },
     {
-      title: "Pending Payments",
-      value: "Not tracked yet",
-      description: "Payment records are not set up",
-      icon: Wallet,
-      color: "bg-amber-50 text-amber-600",
+      title: "Delivered Today",
+      value: deliveredCount.toLocaleString("en-PK"),
+      description: `${deliveredBottles.toLocaleString("en-PK")} bottles delivered`,
+      icon: CheckCircle2,
+      color: "bg-green-50 text-green-700",
+    },
+    {
+      title: "Pending Deliveries",
+      value: pendingCount.toLocaleString("en-PK"),
+      description: "Active clients not marked delivered or missed",
+      icon: Clock3,
+      color: "bg-amber-50 text-amber-700",
+    },
+    {
+      title: "Missed Deliveries",
+      value: missedCount.toLocaleString("en-PK"),
+      description: "Marked missed for today",
+      icon: CircleAlert,
+      color: "bg-orange-50 text-orange-700",
     },
     {
       title: "Monthly Revenue",
       value: formatCurrency(monthlyRevenue),
-      description: "Total monthly price of active clients",
+      description: "Monthly prices of active clients",
       icon: TrendingUp,
       color: "bg-purple-50 text-purple-600",
+    },
+    {
+      title: "Payments Received",
+      value: formatCurrency(paymentsReceived),
+      description: "Payments received this month",
+      icon: Banknote,
+      color: "bg-teal-50 text-teal-700",
+    },
+    {
+      title: "Outstanding Payments",
+      value: formatCurrency(outstandingPayments),
+      description: "Expected monthly charges minus payments recorded for this billing month",
+      icon: ReceiptText,
+      color: "bg-rose-50 text-rose-700",
     },
   ];
 
@@ -233,8 +358,23 @@ export default async function DashboardPage() {
               Could not load client records: {clientsError.message}
             </div>
           )}
+          {deliveriesError && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+              Could not load today’s delivery records: {deliveriesError.message}
+            </div>
+          )}
+          {billedPaymentsError && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+              Could not calculate outstanding payments: {billedPaymentsError.message}
+            </div>
+          )}
+          {expensesError && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+              Could not load expenses: {expensesError.message}
+            </div>
+          )}
 
-          <section className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
+          <section className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {stats.map((stat) => {
               const Icon = stat.icon;
               return (
@@ -346,23 +486,37 @@ export default async function DashboardPage() {
                 <div>
                   <h3 className="font-bold text-slate-900">Recent Payments</h3>
                   <p className="mt-1 text-sm text-slate-500">
-                    Payment history will appear here after payments are connected.
+                    Payments received this month.
                   </p>
                 </div>
                 <Wallet className="text-emerald-600" size={22} />
               </div>
-              <div className="p-8 text-center">
-                <CreditCard size={30} className="mx-auto mb-3 text-slate-300" />
-                <p className="font-semibold text-slate-700">No payment records yet</p>
-                <p className="mt-1 text-sm text-slate-500">
-                  No sample transactions are shown.
-                </p>
-                <a
-                  href="/payments"
-                  className="mt-4 inline-flex text-sm font-semibold text-emerald-700 hover:text-emerald-800"
-                >
-                  Open Payments
-                </a>
+              {paymentsError ? (
+                <p className="p-5 text-sm text-red-600">Could not load payments: {paymentsError.message}</p>
+              ) : monthlyPayments.length === 0 ? (
+                <div className="p-8 text-center">
+                  <CreditCard size={30} className="mx-auto mb-3 text-slate-300" />
+                  <p className="font-semibold text-slate-700">No payments this month</p>
+                  <p className="mt-1 text-sm text-slate-500">Saved payments will appear here.</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {monthlyPayments.slice(0, 5).map((payment) => {
+                    const client = clients.find((item) => item.id === payment.client_id);
+                    return (
+                      <div key={payment.id} className="flex items-center justify-between gap-3 px-5 py-4">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-slate-800">{client?.name ?? "Client"}</p>
+                          <p className="mt-1 text-xs capitalize text-slate-500">{payment.payment_method} · {payment.payment_date}</p>
+                        </div>
+                        <p className="shrink-0 text-sm font-bold text-emerald-700">{formatCurrency(Number(payment.amount || 0))}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="border-t border-slate-100 p-4 text-center">
+                <a href="/payments" className="text-sm font-semibold text-emerald-700 hover:text-emerald-800">Open Payments</a>
               </div>
             </div>
           </section>
@@ -371,9 +525,9 @@ export default async function DashboardPage() {
             <div className="flex items-center justify-between gap-4 rounded-2xl bg-emerald-950 p-6 text-white">
               <div>
                 <p className="text-sm text-emerald-200">Monthly Business Expenses</p>
-                <h3 className="mt-3 text-2xl font-bold">Not available yet</h3>
+                <h3 className="mt-3 text-2xl font-bold">{formatCurrency(monthlyExpenses)}</h3>
                 <p className="mt-2 text-sm text-emerald-200/80">
-                  Expense records have not been connected.
+                  Expenses recorded from {monthStart} to {monthEnd}.
                 </p>
               </div>
               <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/10">
@@ -384,9 +538,9 @@ export default async function DashboardPage() {
             <div className="flex items-center justify-between gap-4 rounded-2xl bg-emerald-600 p-6 text-white">
               <div>
                 <p className="text-sm text-emerald-50">Monthly Profit</p>
-                <h3 className="mt-3 text-2xl font-bold">Not available yet</h3>
+                <h3 className="mt-3 text-2xl font-bold">{formatCurrency(netProfit)}</h3>
                 <p className="mt-2 text-sm text-emerald-50/80">
-                  Profit will be calculated when payments and expenses are connected.
+                  Payments received this month minus recorded expenses.
                 </p>
               </div>
               <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15">
